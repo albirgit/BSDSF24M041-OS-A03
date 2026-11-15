@@ -1,5 +1,9 @@
 #include "shell.h"
 
+// ---------- Command history storage ----------
+static char* history[HISTORY_SIZE];
+static int history_count = 0;   // number of commands currently stored
+
 char* read_cmd(char* prompt, FILE* fp) {
     printf("%s", prompt);
     char* cmdline = (char*) malloc(sizeof(char) * MAX_LEN);
@@ -84,11 +88,17 @@ int handle_builtin(char** arglist) {
         return 1;
     }
 
+    if (strcmp(arglist[0], "history") == 0) {
+        show_history();
+        return 1;
+    }
+
     if (strcmp(arglist[0], "help") == 0) {
         printf("Built-in commands:\n");
         printf("  cd <dir>  Change the current directory\n");
         printf("  exit      Exit the shell\n");
         printf("  help      Show this help message\n");
+        printf("  history   Show command history (use !n to re-run command n)\n");
         printf("  jobs      Show background jobs (not yet implemented)\n");
         return 1;
     }
@@ -99,4 +109,44 @@ int handle_builtin(char** arglist) {
     }
 
     return 0;   // not a built-in
+}
+
+// Store a command. If the array is full, drop the oldest command
+// and shift everything one place left.
+void add_to_history(const char* cmdline) {
+    if (history_count == HISTORY_SIZE) {
+        free(history[0]);
+        for (int i = 1; i < HISTORY_SIZE; i++)
+            history[i - 1] = history[i];
+        history_count--;
+    }
+    history[history_count++] = strdup(cmdline);
+}
+
+// Print all stored commands, numbered from 1.
+void show_history(void) {
+    for (int i = 0; i < history_count; i++)
+        printf("%d  %s\n", i + 1, history[i]);
+}
+
+// cmdline looks like "!n". Returns a newly malloc'ed copy of the n-th
+// command, or NULL (after printing an error) if it is invalid.
+char* recall_history(const char* cmdline) {
+    const char* p = cmdline + 1;       // skip the '!'
+    if (*p == '\0') {
+        fprintf(stderr, "!: event number required\n");
+        return NULL;
+    }
+    for (const char* q = p; *q != '\0'; q++) {
+        if (*q < '0' || *q > '9') {
+            fprintf(stderr, "%s: event not found\n", cmdline);
+            return NULL;
+        }
+    }
+    int n = atoi(p);
+    if (n < 1 || n > history_count) {
+        fprintf(stderr, "!%d: event not found\n", n);
+        return NULL;
+    }
+    return strdup(history[n - 1]);
 }
