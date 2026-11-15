@@ -1,27 +1,10 @@
 #include "shell.h"
+#include <dirent.h>
+#include <limits.h>
 
 // ---------- Command history storage ----------
 static char* history[HISTORY_SIZE];
 static int history_count = 0;   // number of commands currently stored
-
-char* read_cmd(char* prompt, FILE* fp) {
-    printf("%s", prompt);
-    char* cmdline = (char*) malloc(sizeof(char) * MAX_LEN);
-    int c, pos = 0;
-
-    while ((c = getc(fp)) != EOF) {
-        if (c == '\n') break;
-        cmdline[pos++] = c;
-    }
-
-    if (c == EOF && pos == 0) {
-        free(cmdline);
-        return NULL; // Handle Ctrl+D
-    }
-
-    cmdline[pos] = '\0';
-    return cmdline;
-}
 
 char** tokenize(char* cmdline) {
     // Edge case: empty command line
@@ -149,4 +132,77 @@ char* recall_history(const char* cmdline) {
         return NULL;
     }
     return strdup(history[n - 1]);
+}
+
+// ---------- Tab completion (GNU Readline) ----------
+static char** cmd_list = NULL;   // names of all commands we can complete
+static int cmd_count = 0;
+static int cmd_cap = 0;
+
+static void add_command(const char* name) {
+    if (cmd_count == cmd_cap) {
+        cmd_cap = (cmd_cap == 0) ? 256 : cmd_cap * 2;
+        cmd_list = realloc(cmd_list, cmd_cap * sizeof(char*));
+    }
+    cmd_list[cmd_count++] = strdup(name);
+}
+
+// Build the list once at startup: our built-ins + every executable in PATH.
+static void build_command_list(void) {
+    const char* builtins[] = {"cd", "exit", "help", "history", "jobs", NULL};
+    for (int i = 0; builtins[i] != NULL; i++)
+        add_command(builtins[i]);
+
+    char* path = getenv("PATH");
+    if (path == NULL) return;
+
+    char* copy = strdup(path);          // strtok_r modifies its input
+    char* saveptr;
+    for (char* dir = strtok_r(copy, ":", &saveptr); dir != NULL;
+         dir = strtok_r(NULL, ":", &saveptr)) {
+        DIR* d = opendir(dir);
+        if (d == NULL) continue;
+        struct dirent* e;
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_name[0] == '.') continue;
+            char full[PATH_MAX];
+            snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
+            if (access(full, X_OK) == 0)
+                add_command(e->d_name);
+        }
+        closedir(d);
+    }
+    free(copy);
+}
+
+// Readline calls this again and again (state = 0 on the first call)
+// and each call returns the next matching name, or NULL when finished.
+static char* command_generator(const char* text, int state) {
+    static int index;
+    size_t len = strlen(text);
+
+    if (state == 0)
+        index = 0;
+
+    while (index < cmd_count) {
+        const char* name = cmd_list[index++];
+        if (strncmp(name, text, len) == 0)
+            return strdup(name);        // readline frees this
+    }
+    return NULL;
+}
+
+// Called by readline when TAB is pressed.
+// First word on the line -> complete command names.
+// Anywhere else (or no command matches) -> default filename completion.
+static char** shell_completion(const char* text, int start, int end) {
+    (void)end;
+    if (start == 0)
+        return rl_completion_matches(text, command_generator);
+    return NULL;   // NULL = let readline do its default filename completion
+}
+
+void init_readline(void) {
+    build_command_list();
+    rl_attempted_completion_function = shell_completion;
 }

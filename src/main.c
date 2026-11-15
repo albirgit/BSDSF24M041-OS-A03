@@ -4,7 +4,11 @@ int main() {
     char* cmdline;
     char** arglist;
 
-    while ((cmdline = read_cmd(PROMPT, stdin)) != NULL) {
+    init_readline();    // set up tab completion
+
+    // readline() prints the prompt, handles line editing, arrow keys and
+    // TAB completion. It returns a malloc'ed line, or NULL on Ctrl+D.
+    while ((cmdline = readline(PROMPT)) != NULL) {
 
         // Handle !n BEFORE tokenizing and BEFORE saving to history:
         // replace the "!n" line with the command stored at position n.
@@ -18,7 +22,8 @@ int main() {
         }
 
         if ((arglist = tokenize(cmdline)) != NULL) {
-            add_to_history(cmdline);    // only real (non-empty) commands
+            add_history(cmdline);       // readline's history (Up/Down arrows)
+            add_to_history(cmdline);    // our own history (history, !n)
 
             // Built-ins run inside the shell process (no fork)
             if (handle_builtin(arglist) == 0) {
