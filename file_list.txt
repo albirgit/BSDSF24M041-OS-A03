@@ -1,0 +1,8 @@
+total 8
+drwxr-xr-x. 1 birs_fed birs_fed  14 Nov 15 22:48 bin
+-rw-r--r--. 1 birs_fed birs_fed   0 Nov 15 22:49 file_list.txt
+drwxr-xr-x. 1 birs_fed birs_fed  14 Nov 15 18:18 include
+-rw-r--r--. 1 birs_fed birs_fed 482 Nov 15 18:18 Makefile
+drwxr-xr-x. 1 birs_fed birs_fed  44 Nov 15 22:48 obj
+-rw-r--r--. 1 birs_fed birs_fed  21 Nov 15 16:40 README.md
+drwxr-xr-x. 1 birs_fed birs_fed  44 Nov 15 18:18 src

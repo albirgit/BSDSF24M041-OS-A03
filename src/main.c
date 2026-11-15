@@ -25,9 +25,18 @@ int main() {
             add_history(cmdline);       // readline's history (Up/Down arrows)
             add_to_history(cmdline);    // our own history (history, !n)
 
-            // Built-ins run inside the shell process (no fork)
-            if (handle_builtin(arglist) == 0) {
-                execute(arglist);
+            command_t cmds[MAXARGS];
+            int ncmds = parse_pipeline(arglist, cmds);
+
+            if (ncmds > 0) {
+                // A plain command (no pipe, no redirection) that is a
+                // built-in must run inside the shell process itself.
+                if (ncmds == 1 && cmds[0].infile == NULL &&
+                    cmds[0].outfile == NULL && handle_builtin(cmds[0].argv)) {
+                    // handled, nothing more to do
+                } else {
+                    execute(cmds, ncmds);
+                }
             }
 
             // Free the memory allocated by tokenize()

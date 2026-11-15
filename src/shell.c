@@ -19,21 +19,33 @@ char** tokenize(char* cmdline) {
     }
 
     char* cp = cmdline;
-    char* start;
-    int len;
     int argnum = 0;
 
     while (*cp != '\0' && argnum < MAXARGS) {
-        while (*cp == ' ' || *cp == '\t') cp++; // Skip leading whitespace
+        while (*cp == ' ' || *cp == '\t') cp++;   // Skip leading whitespace
 
-        if (*cp == '\0') break; // Line was only whitespace
+        if (*cp == '\0') break;                   // Line was only whitespace
 
-        start = cp;
-        len = 1;
-        while (*++cp != '\0' && !(*cp == ' ' || *cp == '\t')) {
-            len++;
+        int len = 0;
+        if (*cp == '<' || *cp == '>' || *cp == '|') {
+            // Special operators are always a token of their own,
+            // so "ls>out" and "ls > out" mean the same thing.
+            arglist[argnum][len++] = *cp++;
+        } else {
+            char quote = 0;                       // current quote char, or 0
+            while (*cp != '\0') {
+                if (quote) {
+                    if (*cp == quote) { quote = 0; cp++; continue; }
+                } else {
+                    if (*cp == '"' || *cp == '\'') { quote = *cp; cp++; continue; }
+                    if (*cp == ' ' || *cp == '\t' ||
+                        *cp == '<' || *cp == '>' || *cp == '|') break;
+                }
+                if (len < ARGLEN - 1)
+                    arglist[argnum][len++] = *cp;
+                cp++;
+            }
         }
-        strncpy(arglist[argnum], start, len);
         arglist[argnum][len] = '\0';
         argnum++;
     }
@@ -44,8 +56,59 @@ char** tokenize(char* cmdline) {
         return NULL;
     }
 
+    // Free the unused slots, then terminate the list
+    for (int i = argnum; i < MAXARGS + 1; i++) free(arglist[i]);
     arglist[argnum] = NULL;
     return arglist;
+}
+
+static int is_operator(const char* t) {
+    return strcmp(t, "<") == 0 || strcmp(t, ">") == 0 || strcmp(t, "|") == 0;
+}
+
+// Split the token list into a pipeline of commands.
+//   ls -l | grep x > out.txt   ->   cmds[0] = {ls -l}, cmds[1] = {grep x, outfile=out.txt}
+// Returns the number of commands, or -1 on a syntax error.
+// cmds[i].argv/infile/outfile point INTO arglist (no copies are made).
+int parse_pipeline(char** arglist, command_t* cmds) {
+    int n = 0;          // index of the command being filled
+    int argc = 0;       // number of args stored in cmds[n].argv
+    memset(&cmds[0], 0, sizeof(command_t));
+
+    for (int i = 0; arglist[i] != NULL; i++) {
+        char* t = arglist[i];
+
+        if (strcmp(t, "|") == 0) {
+            if (argc == 0) {
+                fprintf(stderr, "syntax error: missing command before '|'\n");
+                return -1;
+            }
+            cmds[n].argv[argc] = NULL;
+            n++;
+            argc = 0;
+            memset(&cmds[n], 0, sizeof(command_t));
+        }
+        else if (strcmp(t, "<") == 0 || strcmp(t, ">") == 0) {
+            char* file = arglist[i + 1];
+            if (file == NULL || is_operator(file)) {
+                fprintf(stderr, "syntax error: expected a filename after '%s'\n", t);
+                return -1;
+            }
+            if (t[0] == '<') cmds[n].infile = file;
+            else             cmds[n].outfile = file;
+            i++;                        // skip the filename token
+        }
+        else {
+            cmds[n].argv[argc++] = t;
+        }
+    }
+
+    if (argc == 0) {
+        fprintf(stderr, "syntax error: missing command\n");
+        return -1;
+    }
+    cmds[n].argv[argc] = NULL;
+    return n + 1;
 }
 
 // Returns 1 if the command was a built-in (and was handled here),
