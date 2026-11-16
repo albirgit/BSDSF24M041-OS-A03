@@ -23,31 +23,53 @@ static int starts_with_word(char* s, const char* kw, char** rest) {
     return 1;
 }
 
-// Tokenize, parse and run ONE command (the text between two ';').
+// 1 if EVERY token is of the form NAME=value (so the line is only assignments)
+static int all_assignments(char** arglist) {
+    if (arglist[0] == NULL)
+        return 0;
+    for (int i = 0; arglist[i] != NULL; i++)
+        if (!is_assignment(arglist[i]))
+            return 0;
+    return 1;
+}
+
+// Tokenize, expand variables, parse and run ONE command (text between ';').
 // Returns its exit status (0 = success).
 static int run_command(char* segment) {
     char** arglist = tokenize(segment);
     if (arglist == NULL)
         return 0;                               // empty segment
 
+    // $NAME and $? are replaced BEFORE the command is executed
+    expand_variables(arglist);
+
     int status = 0;
-    int background = strip_background(arglist); // trailing '&' ?
 
-    command_t cmds[MAXARGS];
-    int ncmds = parse_pipeline(arglist, cmds);
-
-    if (ncmds < 0) {
-        status = 2;                             // syntax error
-    } else if (!background && ncmds == 1 && cmds[0].infile == NULL &&
-               cmds[0].outfile == NULL && handle_builtin(cmds[0].argv)) {
-        status = 0;                             // built-in ran in the shell
+    if (all_assignments(arglist)) {
+        // VAR=value is handled by the shell itself: no fork()
+        for (int i = 0; arglist[i] != NULL; i++)
+            do_assignment(arglist[i]);
     } else {
-        status = execute(cmds, ncmds, background, segment);
+        int background = strip_background(arglist);
+
+        command_t cmds[MAXARGS];
+        int ncmds = parse_pipeline(arglist, cmds);
+
+        if (ncmds < 0) {
+            status = 2;                         // syntax error
+        } else if (!background && ncmds == 1 && cmds[0].infile == NULL &&
+                   cmds[0].outfile == NULL && handle_builtin(cmds[0].argv)) {
+            status = 0;                         // built-in ran in the shell
+        } else {
+            status = execute(cmds, ncmds, background, segment);
+        }
     }
 
     for (int i = 0; arglist[i] != NULL; i++)
         free(arglist[i]);
     free(arglist);
+
+    last_status = status;                       // remember it for $?
     return status;
 }
 
@@ -73,12 +95,11 @@ static int run_segments(char** segs, int n) {
 enum { ST_COND, ST_THEN, ST_ELSE };
 
 typedef struct {
-    char* cond[MAX_BLOCK];  int ncond;     // commands after 'if'
-    char* thenb[MAX_BLOCK]; int nthen;     // commands between then and else/fi
-    char* elseb[MAX_BLOCK]; int nelse;     // commands between else and fi
+    char* cond[MAX_BLOCK];  int ncond;
+    char* thenb[MAX_BLOCK]; int nthen;
+    char* elseb[MAX_BLOCK]; int nelse;
 } if_block_t;
 
-// Add one command string to the buffer of the current state.
 static int add_cmd(if_block_t* b, int state, char* s) {
     char** arr;
     int* n;
@@ -101,10 +122,10 @@ static void handle_if(char* firstline) {
     if_block_t b;
     memset(&b, 0, sizeof(b));
 
-    char* lines[MAX_BLOCK];     // extra lines read by us (we must free them)
+    char* lines[MAX_BLOCK];
     int nlines = 0;
-    char* segs[MAXARGS];        // pieces of the current line
-    char* tail[MAXARGS];        // pieces that come after "fi" on its line
+    char* segs[MAXARGS];
+    char* tail[MAXARGS];
     int ntail = 0;
 
     int state = ST_COND;
@@ -128,7 +149,6 @@ static void handle_if(char* firstline) {
             lines[nlines++] = line;
         }
 
-        // 'if true; then echo a; fi' on one line works because of this split
         int nseg = split_commands(line, segs, MAXARGS);
 
         for (int i = 0; i < nseg && !finished; i++) {
@@ -136,7 +156,7 @@ static void handle_if(char* firstline) {
             char* rest = NULL;
 
             if (first && i == 0) {
-                starts_with_word(s, "if", &rest);       // known to match
+                starts_with_word(s, "if", &rest);
                 if (!is_blank(rest) && !add_cmd(&b, state, rest))
                     error = 1;
             }
@@ -173,7 +193,7 @@ static void handle_if(char* firstline) {
                     error = 1;
                 }
                 finished = 1;
-                for (int j = i + 1; j < nseg; j++)      // commands after fi
+                for (int j = i + 1; j < nseg; j++)
                     tail[ntail++] = segs[j];
             }
             else {
@@ -185,12 +205,12 @@ static void handle_if(char* firstline) {
     }
 
     if (finished && !error) {
-        int status = run_segments(b.cond, b.ncond);    // run the condition
+        int status = run_segments(b.cond, b.ncond);
         if (status == 0)
-            run_segments(b.thenb, b.nthen);            // exit status 0  -> then
+            run_segments(b.thenb, b.nthen);
         else if (b.nelse > 0)
-            run_segments(b.elseb, b.nelse);            // non-zero       -> else
-        run_segments(tail, ntail);                     // anything after "fi"
+            run_segments(b.elseb, b.nelse);
+        run_segments(tail, ntail);
     }
 
     for (int i = 0; i < nlines; i++)
@@ -203,8 +223,7 @@ int main() {
     init_readline();    // set up tab completion
 
     while (1) {
-        // Before every prompt: collect finished background jobs (no zombies)
-        reap_jobs();
+        reap_jobs();    // collect finished background jobs (no zombies)
 
         cmdline = readline(PROMPT);
         if (cmdline == NULL)
@@ -220,13 +239,11 @@ int main() {
             printf("%s\n", cmdline);
         }
 
-        // Save the whole line once, exactly as typed
         if (!is_blank(cmdline)) {
             add_history(cmdline);
             add_to_history(cmdline);
         }
 
-        // A line starting with "if" begins a multi-line control block
         char* rest;
         if (starts_with_word(cmdline, "if", &rest)) {
             handle_if(cmdline);
@@ -238,6 +255,7 @@ int main() {
         free(cmdline);
     }
 
+    free_variables();
     printf("\nShell exited.\n");
     return 0;
 }

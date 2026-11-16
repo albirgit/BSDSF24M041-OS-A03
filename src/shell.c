@@ -1,10 +1,14 @@
 #include "shell.h"
 #include <dirent.h>
 #include <limits.h>
+#include <ctype.h>
 
 // ---------- Command history storage ----------
 static char* history[HISTORY_SIZE];
 static int history_count = 0;   // number of commands currently stored
+
+// Exit status of the last command ($?)
+int last_status = 0;
 
 char** tokenize(char* cmdline) {
     // Edge case: empty command line
@@ -120,7 +124,6 @@ int parse_pipeline(char** arglist, command_t* cmds) {
 // Split a line at every ';' that is NOT inside quotes.
 // The ';' characters are overwritten with '\0', and segments[] receives
 // pointers to the pieces. Returns the number of pieces.
-//   echo a ; sleep 2 ; echo b   ->   "echo a ", " sleep 2 ", " echo b"
 int split_commands(char* cmdline, char** segments, int max) {
     int n = 0;
     char quote = 0;
@@ -162,6 +165,152 @@ int strip_background(char** arglist) {
     return 0;
 }
 
+// ---------- Shell variables (singly linked list) ----------
+typedef struct var {
+    char* name;
+    char* value;
+    struct var* next;
+} var_t;
+
+static var_t* var_head = NULL;
+
+static var_t* find_var(const char* name) {
+    for (var_t* v = var_head; v != NULL; v = v->next)
+        if (strcmp(v->name, name) == 0)
+            return v;
+    return NULL;
+}
+
+// Create the variable, or overwrite its value if it already exists.
+static void set_variable(const char* name, const char* value) {
+    var_t* v = find_var(name);
+    if (v != NULL) {
+        char* nv = strdup(value);
+        free(v->value);
+        v->value = nv;
+        return;
+    }
+    v = malloc(sizeof(var_t));
+    v->name = strdup(name);
+    v->value = strdup(value);
+    v->next = NULL;
+
+    if (var_head == NULL) {
+        var_head = v;
+    } else {
+        var_t* t = var_head;
+        while (t->next != NULL) t = t->next;
+        t->next = v;                    // keep insertion order
+    }
+}
+
+// Shell variable first, then the environment (so $HOME, $USER, $PATH work)
+static const char* lookup_var(const char* name) {
+    var_t* v = find_var(name);
+    if (v != NULL)
+        return v->value;
+    return getenv(name);
+}
+
+// 1 if tok looks like NAME=value, where NAME = letter/_ followed by letters/digits/_
+int is_assignment(const char* tok) {
+    if (!(isalpha((unsigned char)tok[0]) || tok[0] == '_'))
+        return 0;
+    int i = 1;
+    while (isalnum((unsigned char)tok[i]) || tok[i] == '_')
+        i++;
+    return tok[i] == '=';
+}
+
+// Split "NAME=value" at the first '=' and store it.
+void do_assignment(const char* tok) {
+    const char* eq = strchr(tok, '=');
+    char name[ARGLEN];
+    size_t n = (size_t)(eq - tok);
+    if (n >= ARGLEN) n = ARGLEN - 1;
+    memcpy(name, tok, n);
+    name[n] = '\0';
+    set_variable(name, eq + 1);
+}
+
+// The 'set' built-in: print every variable
+void print_variables(void) {
+    for (var_t* v = var_head; v != NULL; v = v->next)
+        printf("%s=%s\n", v->name, v->value);
+}
+
+void free_variables(void) {
+    var_t* v = var_head;
+    while (v != NULL) {
+        var_t* next = v->next;
+        free(v->name);
+        free(v->value);
+        free(v);
+        v = next;
+    }
+    var_head = NULL;
+}
+
+// Append n bytes of s to a growing heap buffer.
+static char* buf_append(char* buf, size_t* len, size_t* cap, const char* s, size_t n) {
+    while (*len + n + 1 > *cap) {
+        *cap *= 2;
+        buf = realloc(buf, *cap);
+    }
+    memcpy(buf + *len, s, n);
+    *len += n;
+    buf[*len] = '\0';
+    return buf;
+}
+
+// Return a NEW heap string where every $NAME and $? in tok is replaced.
+// An undefined variable becomes an empty string.
+static char* expand_token(const char* tok) {
+    size_t len = 0, cap = 64;
+    char* out = malloc(cap);
+    out[0] = '\0';
+
+    const char* p = tok;
+    while (*p != '\0') {
+        if (*p == '$' && (isalpha((unsigned char)p[1]) || p[1] == '_')) {
+            const char* s = p + 1;
+            const char* e = s;
+            while (isalnum((unsigned char)*e) || *e == '_')
+                e++;
+            char name[ARGLEN];
+            size_t nl = (size_t)(e - s);
+            if (nl >= ARGLEN) nl = ARGLEN - 1;
+            memcpy(name, s, nl);
+            name[nl] = '\0';
+
+            const char* val = lookup_var(name);
+            if (val != NULL)
+                out = buf_append(out, &len, &cap, val, strlen(val));
+            p = e;
+        }
+        else if (*p == '$' && p[1] == '?') {
+            char num[16];
+            snprintf(num, sizeof(num), "%d", last_status);
+            out = buf_append(out, &len, &cap, num, strlen(num));
+            p += 2;
+        }
+        else {
+            out = buf_append(out, &len, &cap, p, 1);
+            p++;
+        }
+    }
+    return out;
+}
+
+// Pre-execution expansion step: replace every token by its expanded copy.
+void expand_variables(char** arglist) {
+    for (int i = 0; arglist[i] != NULL; i++) {
+        char* expanded = expand_token(arglist[i]);
+        free(arglist[i]);
+        arglist[i] = expanded;
+    }
+}
+
 // Returns 1 if the command was a built-in (and was handled here),
 // returns 0 if it is not a built-in (caller should fork/exec it).
 int handle_builtin(char** arglist) {
@@ -169,6 +318,7 @@ int handle_builtin(char** arglist) {
         return 0;
 
     if (strcmp(arglist[0], "exit") == 0) {
+        free_variables();
         printf("Shell exited.\n");
         exit(0);
     }
@@ -197,11 +347,17 @@ int handle_builtin(char** arglist) {
         printf("  help      Show this help message\n");
         printf("  history   Show command history (use !n to re-run command n)\n");
         printf("  jobs      List running background jobs\n");
+        printf("  set       Show all shell variables (create one with NAME=value)\n");
         return 1;
     }
 
     if (strcmp(arglist[0], "jobs") == 0) {
         print_jobs();
+        return 1;
+    }
+
+    if (strcmp(arglist[0], "set") == 0) {
+        print_variables();
         return 1;
     }
 
@@ -263,7 +419,7 @@ static void add_command(const char* name) {
 
 // Build the list once at startup: our built-ins + every executable in PATH.
 static void build_command_list(void) {
-    const char* builtins[] = {"cd", "exit", "help", "history", "jobs", NULL};
+    const char* builtins[] = {"cd", "exit", "help", "history", "jobs", "set", NULL};
     for (int i = 0; builtins[i] != NULL; i++)
         add_command(builtins[i]);
 

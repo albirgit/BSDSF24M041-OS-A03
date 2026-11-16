@@ -26,6 +26,9 @@ typedef struct {
     char* outfile;             // file after '>'  (NULL if none)
 } command_t;
 
+// Exit status of the last command (used for $?)
+extern int last_status;
+
 // Function prototypes
 void init_readline(void);
 char** tokenize(char* cmdline);
@@ -39,5 +42,12 @@ int handle_builtin(char** arglist);
 void add_to_history(const char* cmdline);
 void show_history(void);
 char* recall_history(const char* cmdline);
+
+// Shell variables
+int is_assignment(const char* tok);
+void do_assignment(const char* tok);
+void expand_variables(char** arglist);
+void print_variables(void);
+void free_variables(void);
 
 #endif // SHELL_H
