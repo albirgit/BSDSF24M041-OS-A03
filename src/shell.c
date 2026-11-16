@@ -27,7 +27,7 @@ char** tokenize(char* cmdline) {
         if (*cp == '\0') break;                   // Line was only whitespace
 
         int len = 0;
-        if (*cp == '<' || *cp == '>' || *cp == '|') {
+        if (*cp == '<' || *cp == '>' || *cp == '|' || *cp == '&') {
             // Special operators are always a token of their own,
             // so "ls>out" and "ls > out" mean the same thing.
             arglist[argnum][len++] = *cp++;
@@ -39,7 +39,7 @@ char** tokenize(char* cmdline) {
                 } else {
                     if (*cp == '"' || *cp == '\'') { quote = *cp; cp++; continue; }
                     if (*cp == ' ' || *cp == '\t' ||
-                        *cp == '<' || *cp == '>' || *cp == '|') break;
+                        *cp == '<' || *cp == '>' || *cp == '|' || *cp == '&') break;
                 }
                 if (len < ARGLEN - 1)
                     arglist[argnum][len++] = *cp;
@@ -63,7 +63,8 @@ char** tokenize(char* cmdline) {
 }
 
 static int is_operator(const char* t) {
-    return strcmp(t, "<") == 0 || strcmp(t, ">") == 0 || strcmp(t, "|") == 0;
+    return strcmp(t, "<") == 0 || strcmp(t, ">") == 0 ||
+           strcmp(t, "|") == 0 || strcmp(t, "&") == 0;
 }
 
 // Split the token list into a pipeline of commands.
@@ -98,6 +99,11 @@ int parse_pipeline(char** arglist, command_t* cmds) {
             else             cmds[n].outfile = file;
             i++;                        // skip the filename token
         }
+        else if (strcmp(t, "&") == 0) {
+            // a trailing '&' was already removed by strip_background()
+            fprintf(stderr, "syntax error: '&' is only allowed at the end of a command\n");
+            return -1;
+        }
         else {
             cmds[n].argv[argc++] = t;
         }
@@ -109,6 +115,51 @@ int parse_pipeline(char** arglist, command_t* cmds) {
     }
     cmds[n].argv[argc] = NULL;
     return n + 1;
+}
+
+// Split a line at every ';' that is NOT inside quotes.
+// The ';' characters are overwritten with '\0', and segments[] receives
+// pointers to the pieces. Returns the number of pieces.
+//   echo a ; sleep 2 ; echo b   ->   "echo a ", " sleep 2 ", " echo b"
+int split_commands(char* cmdline, char** segments, int max) {
+    int n = 0;
+    char quote = 0;
+    char* start = cmdline;
+
+    for (char* p = cmdline; ; p++) {
+        if (*p == '\0' || (!quote && *p == ';')) {
+            int at_end = (*p == '\0');
+            *p = '\0';
+            if (n < max)
+                segments[n++] = start;
+            if (at_end)
+                break;
+            start = p + 1;
+        }
+        else if (quote) {
+            if (*p == quote) quote = 0;
+        }
+        else if (*p == '"' || *p == '\'') {
+            quote = *p;
+        }
+    }
+    return n;
+}
+
+// If the last token is "&", remove it and return 1 (run in background).
+// Otherwise return 0.
+int strip_background(char** arglist) {
+    int last = 0;
+    while (arglist[last] != NULL)
+        last++;
+    last--;                                   // index of the last token
+
+    if (last >= 0 && strcmp(arglist[last], "&") == 0) {
+        free(arglist[last]);
+        arglist[last] = NULL;
+        return 1;
+    }
+    return 0;
 }
 
 // Returns 1 if the command was a built-in (and was handled here),
@@ -145,12 +196,12 @@ int handle_builtin(char** arglist) {
         printf("  exit      Exit the shell\n");
         printf("  help      Show this help message\n");
         printf("  history   Show command history (use !n to re-run command n)\n");
-        printf("  jobs      Show background jobs (not yet implemented)\n");
+        printf("  jobs      List running background jobs\n");
         return 1;
     }
 
     if (strcmp(arglist[0], "jobs") == 0) {
-        printf("Job control not yet implemented.\n");
+        print_jobs();
         return 1;
     }
 

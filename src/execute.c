@@ -1,8 +1,74 @@
 #include "shell.h"
 
+// ---------- Background job table ----------
+typedef struct {
+    int id;                 // job number shown to the user: [1], [2], ...
+    pid_t pid;              // PID of the (last process of the) job
+    char cmd[MAX_LEN];      // the command text, for display
+} job_t;
+
+static job_t jobs[MAX_JOBS];
+static int job_count = 0;
+static int next_job_id = 1;
+
+// Remember a new background job. Returns its job id, or -1 if the table is full.
+static int add_job(pid_t pid, const char* cmdtext) {
+    if (job_count == MAX_JOBS)
+        return -1;
+
+    while (*cmdtext == ' ' || *cmdtext == '\t')     // skip leading spaces
+        cmdtext++;
+
+    job_t* j = &jobs[job_count++];
+    j->id = next_job_id++;
+    j->pid = pid;
+    strncpy(j->cmd, cmdtext, MAX_LEN - 1);
+    j->cmd[MAX_LEN - 1] = '\0';
+
+    size_t len = strlen(j->cmd);                    // strip trailing spaces
+    while (len > 0 && (j->cmd[len - 1] == ' ' || j->cmd[len - 1] == '\t'))
+        j->cmd[--len] = '\0';
+
+    return j->id;
+}
+
+// Collect every finished child WITHOUT blocking (WNOHANG), so no zombies
+// are left behind, and remove finished jobs from the table.
+void reap_jobs(void) {
+    int status;
+    pid_t pid;
+
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        for (int i = 0; i < job_count; i++) {
+            if (jobs[i].pid == pid) {
+                printf("[%d] Done    %s\n", jobs[i].id, jobs[i].cmd);
+                for (int k = i + 1; k < job_count; k++)   // close the gap
+                    jobs[k - 1] = jobs[k];
+                job_count--;
+                break;
+            }
+        }
+    }
+    if (job_count == 0)
+        next_job_id = 1;    // numbering starts again when nothing is running
+}
+
+// The 'jobs' built-in
+void print_jobs(void) {
+    reap_jobs();            // so finished jobs are not shown as running
+    if (job_count == 0) {
+        printf("No background jobs.\n");
+        return;
+    }
+    for (int i = 0; i < job_count; i++)
+        printf("[%d] %d Running  %s\n", jobs[i].id, (int)jobs[i].pid, jobs[i].cmd);
+}
+
+// ---------- Running commands ----------
 // Runs a pipeline of ncmds commands: cmd0 | cmd1 | ... | cmdN
 // (ncmds == 1 means a plain command, possibly with < and > redirection).
-int execute(command_t* cmds, int ncmds) {
+// background != 0: do not wait, record the job and return immediately.
+int execute(command_t* cmds, int ncmds, int background, const char* cmdtext) {
     pid_t pids[MAXARGS];
     int started = 0;        // how many children we have forked
     int prev_read = -1;     // read end of the previous pipe (-1 = none)
@@ -26,6 +92,11 @@ int execute(command_t* cmds, int ncmds) {
         }
 
         if (pid == 0) {                         // ---- child ----
+            // A background job must not fight the shell for the keyboard
+            if (background && i == 0 && cmds[i].infile == NULL) {
+                int nf = open("/dev/null", O_RDONLY);
+                if (nf != -1) { dup2(nf, STDIN_FILENO); close(nf); }
+            }
             // stdin comes from the previous pipe
             if (prev_read != -1) {
                 dup2(prev_read, STDIN_FILENO);
@@ -50,7 +121,7 @@ int execute(command_t* cmds, int ncmds) {
                 dup2(f, STDOUT_FILENO);
                 close(f);
             }
-            // Built-ins inside a pipeline/redirection run in the child
+            // Built-ins inside a pipeline/redirection/background run in the child
             if (handle_builtin(cmds[i].argv))
                 exit(0);
 
@@ -67,6 +138,19 @@ int execute(command_t* cmds, int ncmds) {
     }
 
     if (prev_read != -1) close(prev_read);      // only if we broke out early
+
+    if (background) {
+        // Do NOT wait. Remember the job and give the prompt back at once.
+        if (started > 0) {
+            pid_t last = pids[started - 1];
+            int id = add_job(last, cmdtext);
+            if (id == -1)
+                fprintf(stderr, "warning: job table full, job is not tracked\n");
+            else
+                printf("[%d] %d\n", id, (int)last);
+        }
+        return 0;
+    }
 
     int status;
     for (int i = 0; i < started; i++)
