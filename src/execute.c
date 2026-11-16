@@ -152,8 +152,18 @@ int execute(command_t* cmds, int ncmds, int background, const char* cmdtext) {
         return 0;
     }
 
+    // Wait for every child. The exit status of the LAST process is the
+    // status of the whole command/pipeline (needed by if-then-else-fi).
     int status;
-    for (int i = 0; i < started; i++)
+    int result = (started > 0) ? 0 : 1;
+    for (int i = 0; i < started; i++) {
         waitpid(pids[i], &status, 0);
-    return 0;
+        if (i == started - 1) {
+            if (WIFEXITED(status))
+                result = WEXITSTATUS(status);
+            else if (WIFSIGNALED(status))
+                result = 128 + WTERMSIG(status);
+        }
+    }
+    return result;
 }
