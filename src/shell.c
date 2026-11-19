@@ -197,6 +197,11 @@ int handle_builtin(char** arglist) {
         printf("  help      Show this help message\n");
         printf("  history   Show command history (use !n to re-run command n)\n");
         printf("  jobs      List running background jobs\n");
+        printf("  set       Show all shell variables\n");
+        printf("\nShell features:\n");
+        printf("  if CMD; then CMD; else CMD; fi   Conditional execution (else is optional)\n");
+        printf("  VAR=value                        Assign a shell variable\n");
+        printf("  $VAR                             Use a variable's value in a command\n");
         return 1;
     }
 
